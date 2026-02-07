@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { signIn, useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { Phone, Lock, Mail, AlertCircle } from "lucide-react";
@@ -43,7 +43,7 @@ export default function LoginPage() {
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError("");
@@ -58,18 +58,34 @@ export default function LoginPage() {
       if (result?.error) {
         setError(result.error);
         toast.error(result.error);
+        setLoading(false);
       } else if (result?.ok) {
         toast.success("Login successful!");
-        // The redirect will be handled by useEffect when session updates
-        router.refresh();
+        // Wait for session to be established before redirecting
+        const checkSession = setInterval(async () => {
+          const session = await fetch("/api/auth/session").then(res => res.json());
+          if (session?.user?.role) {
+            clearInterval(checkSession);
+            const role = session.user.role;
+            const redirectPath = getRoleBasedPath(role);
+            setLoading(false);
+            router.push(redirectPath);
+          }
+        }, 100);
+
+        // Timeout after 5 seconds to avoid infinite loop
+        setTimeout(() => {
+          clearInterval(checkSession);
+          setLoading(false);
+          router.push("/agent/dialer"); // Default redirect
+        }, 5000);
       }
     } catch (err) {
       setError("An error occurred. Please try again.");
       toast.error("Login failed");
-    } finally {
       setLoading(false);
     }
-  };
+  }, [formData, router]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-4">
