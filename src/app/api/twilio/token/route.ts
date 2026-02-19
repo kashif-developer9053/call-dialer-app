@@ -3,48 +3,37 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import twilio from "twilio";
 
-const AccessToken = twilio.jwt.AccessToken;
-const VoiceGrant = AccessToken.VoiceGrant;
+const { AccessToken } = twilio.jwt;
+const { VoiceGrant } = AccessToken;
 
 export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const accountSid = process.env.TWILIO_ACCOUNT_SID!;
-    const apiKey = process.env.TWILIO_API_KEY_SID!;
-    const apiSecret = process.env.TWILIO_API_KEY_SECRET!;
-    const twimlAppSid = process.env.TWILIO_TWIML_APP_SID!;
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const apiKeySid = process.env.TWILIO_API_KEY_SID;
+    const apiKeySecret = process.env.TWILIO_API_KEY_SECRET;
 
-    // Use email or a fallback identity
-    const identity = session.user.email || `user-${session.user.id}`;
+    if (!accountSid || !apiKeySid || !apiKeySecret) {
+      return NextResponse.json({ error: "Missing Twilio credentials" }, { status: 500 });
+    }
 
-    // Create access token
-    const token = new AccessToken(accountSid, apiKey, apiSecret, {
-      identity: identity,
-      ttl: 3600, // 1 hour
+    const identity = (session.user as any).email || `user-${(session.user as any).id}`;
+
+    const token = new AccessToken(accountSid, apiKeySid, apiKeySecret, {
+      identity,
+      ttl: 3600,
     });
 
-    // Create voice grant
-    const voiceGrant = new VoiceGrant({
-      outgoingApplicationSid: twimlAppSid,
-      incomingAllow: true,
-    });
+    // incomingAllow=true lets the server call this browser client via client:identity
+    token.addGrant(new VoiceGrant({ incomingAllow: true }));
 
-    token.addGrant(voiceGrant);
-
-    return NextResponse.json({
-      token: token.toJwt(),
-      identity: identity,
-    });
+    return NextResponse.json({ token: token.toJwt(), identity });
   } catch (error) {
-    console.error("Token generation error:", error);
-    return NextResponse.json(
-      { error: "Failed to generate token" },
-      { status: 500 }
-    );
+    console.error("Token error:", error);
+    return NextResponse.json({ error: "Failed to generate token" }, { status: 500 });
   }
 }
