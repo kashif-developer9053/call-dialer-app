@@ -1,312 +1,343 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Phone, Users, CheckCircle, Clock } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Textarea } from "@/components/ui/textarea";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  Phone,
+  Users,
+  ChevronRight,
+  ChevronLeft,
+  Mail,
+  Building2,
+  CheckCircle,
+  PhoneCall,
+} from "lucide-react";
 import toast from "react-hot-toast";
 import TwilioDialer from "@/components/agent/TwilioDialer";
+
+// ─── Types ──────────────────────────────────────────────────────────────────
+
+interface Lead {
+  _id: string;
+  name: string;
+  phone: string;
+  email?: string;
+  company?: string;
+  status: string;
+  notes?: string;
+}
+
+// ─── Disposition config ──────────────────────────────────────────────────────
+
+const DISPOSITIONS = [
+  { status: "interested",    label: "Interested",     dot: "bg-green-500",  text: "text-green-700",  ring: "ring-green-200",  bg: "hover:bg-green-50" },
+  { status: "not_interested",label: "Not Interested", dot: "bg-gray-400",   text: "text-gray-600",   ring: "ring-gray-200",   bg: "hover:bg-gray-50" },
+  { status: "callback",      label: "Callback",       dot: "bg-yellow-400", text: "text-yellow-700", ring: "ring-yellow-200", bg: "hover:bg-yellow-50" },
+  { status: "dnc",           label: "Do Not Call",    dot: "bg-red-500",    text: "text-red-700",    ring: "ring-red-200",    bg: "hover:bg-red-50" },
+  { status: "invalid",       label: "Invalid Number", dot: "bg-orange-400", text: "text-orange-700", ring: "ring-orange-200", bg: "hover:bg-orange-50" },
+  { status: "converted",     label: "Converted",      dot: "bg-emerald-500",text: "text-emerald-700",ring: "ring-emerald-200",bg: "hover:bg-emerald-50" },
+] as const;
+
+const STATUS_COLORS: Record<string, string> = {
+  new:          "bg-blue-100 text-blue-700",
+  callback:     "bg-yellow-100 text-yellow-700",
+  interested:   "bg-green-100 text-green-700",
+  not_interested:"bg-gray-100 text-gray-600",
+  dnc:          "bg-red-100 text-red-700",
+  invalid:      "bg-orange-100 text-orange-700",
+  converted:    "bg-emerald-100 text-emerald-700",
+};
+
+function initials(name: string) {
+  return name
+    .split(" ")
+    .slice(0, 2)
+    .map((n) => n[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
+// ─── Page ────────────────────────────────────────────────────────────────────
+
 export default function AgentDialer() {
-  const [leads, setLeads] = useState<any[]>([]);
+  const [leads, setLeads] = useState<Lead[]>([]);
   const [currentLeadIndex, setCurrentLeadIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [notes, setNotes] = useState("");
   const [updating, setUpdating] = useState(false);
 
-  const currentLead = leads[currentLeadIndex];
+  const currentLead = leads[currentLeadIndex] ?? null;
+  const progress = leads.length > 0 ? Math.round((currentLeadIndex / leads.length) * 100) : 0;
+  const remaining = leads.length - currentLeadIndex;
 
   const fetchLeads = async () => {
     try {
-      const response = await fetch("/api/leads");
-      const data = await response.json();
-      // Filter only "new" and "callback" leads for dialing
-      const dialableLeads = data.leads.filter(
-        (lead: any) => lead.status === "new" || lead.status === "callback"
+      const res = await fetch("/api/leads");
+      const data = await res.json();
+      const dialable = (data.leads as Lead[]).filter(
+        (l) => l.status === "new" || l.status === "callback"
       );
-      setLeads(dialableLeads);
-    } catch (error) {
+      setLeads(dialable);
+    } catch {
       toast.error("Failed to fetch leads");
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    fetchLeads();
-  }, []);
-
-  useEffect(() => {
-    if (currentLead) {
-      setNotes(currentLead.notes || "");
-    }
-  }, [currentLead]);
+  useEffect(() => { fetchLeads(); }, []);
+  useEffect(() => { setNotes(currentLead?.notes ?? ""); }, [currentLead]);
 
   const handleUpdateStatus = async (status: string) => {
     if (!currentLead) return;
-
     setUpdating(true);
-
     try {
-      const response = await fetch(`/api/leads/${currentLead._id}`, {
+      const res = await fetch(`/api/leads/${currentLead._id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status, notes }),
       });
+      if (!res.ok) throw new Error("Failed to update lead");
 
-      if (!response.ok) {
-        throw new Error("Failed to update lead");
-      }
+      const label = DISPOSITIONS.find((d) => d.status === status)?.label ?? status;
+      toast.success(`Marked as "${label}"`);
 
-      toast.success(`Lead marked as ${status}`);
-
-      // Move to next lead
       if (currentLeadIndex < leads.length - 1) {
-        setCurrentLeadIndex(currentLeadIndex + 1);
+        setCurrentLeadIndex((i) => i + 1);
       } else {
         toast.success("All leads completed!");
-        fetchLeads(); // Refresh to get new leads
+        await fetchLeads();
         setCurrentLeadIndex(0);
       }
-
       setNotes("");
-    } catch (error: any) {
-      toast.error(error.message || "Failed to update lead");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update lead");
     } finally {
       setUpdating(false);
     }
   };
 
-  const handleCall = () => {
-    if (currentLead) {
-      // For now, just show the phone number
-      // In next step, we'll integrate Twilio
-      window.location.href = `tel:${currentLead.phone}`;
-      toast.success("Opening dialer...");
-    }
-  };
+  // ── Loading ────────────────────────────────────────────────────────────────
 
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="text-gray-500">Loading leads...</div>
+        <div className="flex items-center gap-3 text-gray-500">
+          <span className="w-5 h-5 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin" />
+          Loading leads…
+        </div>
       </div>
     );
   }
 
+  // ── Empty state ────────────────────────────────────────────────────────────
+
+  if (!currentLead) {
+    return (
+      <div className="flex flex-col items-center justify-center h-72 gap-4">
+        <div className="w-20 h-20 rounded-full bg-emerald-50 flex items-center justify-center">
+          <CheckCircle className="w-10 h-10 text-emerald-500" />
+        </div>
+        <div className="text-center">
+          <h2 className="text-xl font-bold text-gray-900">All caught up!</h2>
+          <p className="text-gray-500 text-sm mt-1">You&apos;ve completed all assigned leads.</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Main view ──────────────────────────────────────────────────────────────
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Dialer</h1>
-        <p className="text-gray-600 mt-1">Call your assigned leads</p>
-      </div>
+    <div className="space-y-5">
 
-      {/* Agent Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">
-              Total Leads
-            </CardTitle>
-            <Users className="h-4 w-4 text-blue-600" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-gray-900">{leads.length}</div>
-            <p className="text-xs text-gray-500 mt-1">Assigned to you</p>
-          </CardContent>
-        </Card>
+      {/* ── Page header ── */}
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+            <PhoneCall className="w-6 h-6 text-purple-600" />
+            Dialer
+          </h1>
+          <p className="text-sm text-gray-500 mt-0.5">Work through your assigned leads</p>
+        </div>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">
-              Current Position
-            </CardTitle>
-            <Clock className="h-4 w-4 text-purple-600" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-gray-900">
-              {leads.length > 0 ? currentLeadIndex + 1 : 0}
+        {/* Compact stats */}
+        <div className="flex items-center gap-4 flex-wrap">
+          <Stat icon={<Users className="w-4 h-4 text-blue-500" />}  label="Total"     value={leads.length} />
+          <Stat icon={<Phone  className="w-4 h-4 text-green-500" />} label="Remaining" value={remaining} />
+          <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-4 py-2.5 shadow-sm">
+            <div className="text-right">
+              <p className="text-xs text-gray-500">Progress</p>
+              <p className="text-sm font-bold text-gray-900">{progress}%</p>
             </div>
-            <p className="text-xs text-gray-500 mt-1">of {leads.length}</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">
-              Remaining
-            </CardTitle>
-            <Phone className="h-4 w-4 text-green-600" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-gray-900">
-              {leads.length - currentLeadIndex}
-            </div>
-            <p className="text-xs text-gray-500 mt-1">Leads to call</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">
-              Progress
-            </CardTitle>
-            <CheckCircle className="h-4 w-4 text-emerald-600" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-gray-900">
-              {leads.length > 0
-                ? Math.round((currentLeadIndex / leads.length) * 100)
-                : 0}
-              %
-            </div>
-            <p className="text-xs text-gray-500 mt-1">Completed</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Dialer Card */}
-      {currentLead ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center justify-between">
-              <span>Current Lead</span>
-              <Badge className="bg-blue-100 text-blue-800">
-                {currentLead.status}
-              </Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            {/* Lead Info */}
-            <div className="grid grid-cols-2 gap-4 p-6 bg-gray-50 rounded-lg">
-              <div>
-                <p className="text-sm text-gray-600">Name</p>
-                <p className="text-lg font-semibold text-gray-900">
-                  {currentLead.name}
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-600">Phone</p>
-                <p className="text-lg font-semibold text-gray-900">
-                  {currentLead.phone}
-                </p>
-              </div>
-              {currentLead.email && (
-                <div>
-                  <p className="text-sm text-gray-600">Email</p>
-                  <p className="text-lg font-semibold text-gray-900">
-                    {currentLead.email}
-                  </p>
-                </div>
-              )}
-              {currentLead.company && (
-                <div>
-                  <p className="text-sm text-gray-600">Company</p>
-                  <p className="text-lg font-semibold text-gray-900">
-                    {currentLead.company}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Twilio Dialer */}
-<TwilioDialer
-  leadId={currentLead._id}
-  phoneNumber={currentLead.phone}
-  onCallStart={() => toast.success("Call started")}
-onCallEnd={() => toast("Call ended")}
-/>
-
-            {/* Notes */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-700">
-                Call Notes
-              </label>
-              <Textarea
-                placeholder="Add notes about this call..."
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                rows={4}
+            <div className="w-20 h-2 rounded-full bg-gray-100 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-purple-500 to-pink-500 transition-all duration-500"
+                style={{ width: `${progress}%` }}
               />
             </div>
+          </div>
+        </div>
+      </div>
 
-            {/* Status Update Buttons */}
-            <div className="space-y-3">
-              <p className="text-sm font-medium text-gray-700">Update Status:</p>
-              <div className="grid grid-cols-2 gap-3">
-                <Button
-                  onClick={() => handleUpdateStatus("interested")}
-                  disabled={updating}
-                  variant="outline"
-                  className="border-green-300 text-green-700 hover:bg-green-50"
+      {/* ── Two-column layout ── */}
+      <div className="grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-5 items-start">
+
+        {/* ══════════════════════════ LEFT COLUMN ══════════════════════════ */}
+        <div className="space-y-4">
+
+          {/* Lead card */}
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
+
+            {/* Card header — dark gradient */}
+            <div className="bg-gradient-to-r from-gray-900 to-gray-800 px-6 py-5 flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                {/* Avatar */}
+                <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center text-white font-bold text-lg shrink-0">
+                  {initials(currentLead.name)}
+                </div>
+                <div>
+                  <h2 className="text-white text-lg font-bold leading-tight">{currentLead.name}</h2>
+                  <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full mt-0.5 ${STATUS_COLORS[currentLead.status] ?? "bg-gray-100 text-gray-600"}`}>
+                    {currentLead.status.replace("_", " ")}
+                  </span>
+                </div>
+              </div>
+
+              {/* Navigation */}
+              <div className="flex items-center gap-2">
+                <span className="text-gray-400 text-sm">
+                  {currentLeadIndex + 1} / {leads.length}
+                </span>
+                <button
+                  onClick={() => setCurrentLeadIndex((i) => Math.max(0, i - 1))}
+                  disabled={currentLeadIndex === 0}
+                  className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 disabled:opacity-30 flex items-center justify-center transition-colors"
                 >
-                  Interested
-                </Button>
-                <Button
-                  onClick={() => handleUpdateStatus("not_interested")}
-                  disabled={updating}
-                  variant="outline"
-                  className="border-gray-300 text-gray-700 hover:bg-gray-50"
+                  <ChevronLeft className="w-4 h-4 text-white" />
+                </button>
+                <button
+                  onClick={() => setCurrentLeadIndex((i) => Math.min(leads.length - 1, i + 1))}
+                  disabled={currentLeadIndex === leads.length - 1}
+                  className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 disabled:opacity-30 flex items-center justify-center transition-colors"
                 >
-                  Not Interested
-                </Button>
-                <Button
-                  onClick={() => handleUpdateStatus("callback")}
-                  disabled={updating}
-                  variant="outline"
-                  className="border-yellow-300 text-yellow-700 hover:bg-yellow-50"
-                >
-                  Callback Later
-                </Button>
-                <Button
-                  onClick={() => handleUpdateStatus("dnc")}
-                  disabled={updating}
-                  variant="outline"
-                  className="border-red-300 text-red-700 hover:bg-red-50"
-                >
-                  Do Not Call
-                </Button>
-                <Button
-                  onClick={() => handleUpdateStatus("invalid")}
-                  disabled={updating}
-                  variant="outline"
-                  className="border-orange-300 text-orange-700 hover:bg-orange-50"
-                >
-                  Invalid Number
-                </Button>
-                <Button
-                  onClick={() => handleUpdateStatus("converted")}
-                  disabled={updating}
-                  variant="outline"
-                  className="border-emerald-300 text-emerald-700 hover:bg-emerald-50"
-                >
-                  Converted
-                </Button>
+                  <ChevronRight className="w-4 h-4 text-white" />
+                </button>
               </div>
             </div>
-          </CardContent>
-        </Card>
-      ) : (
-        <Card>
-          <CardContent className="text-center py-12">
-            <CheckCircle className="h-16 w-16 mx-auto mb-4 text-green-500" />
-            <h3 className="text-xl font-semibold text-gray-900 mb-2">
-              All Caught Up! 🎉
-            </h3>
-            <p className="text-gray-600">
-              You've completed all your assigned leads. Great job!
-            </p>
-          </CardContent>
-        </Card>
-      )}
+
+            {/* Lead details grid */}
+            <div className="px-6 py-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <InfoField
+                icon={<Phone className="w-4 h-4 text-purple-500" />}
+                label="Phone"
+                value={currentLead.phone}
+                mono
+              />
+              {currentLead.email && (
+                <InfoField
+                  icon={<Mail className="w-4 h-4 text-blue-500" />}
+                  label="Email"
+                  value={currentLead.email}
+                />
+              )}
+              {currentLead.company && (
+                <InfoField
+                  icon={<Building2 className="w-4 h-4 text-gray-400" />}
+                  label="Company"
+                  value={currentLead.company}
+                />
+              )}
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-5">
+            <label className="block text-sm font-semibold text-gray-700 mb-2">
+              Call Notes
+            </label>
+            <textarea
+              placeholder="Type your notes about this call…"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={4}
+              className="w-full px-3.5 py-3 text-sm rounded-xl border border-gray-200 bg-gray-50 focus:bg-white focus:border-purple-400 focus:ring-2 focus:ring-purple-100 outline-none resize-none transition-all text-gray-800 placeholder-gray-400"
+            />
+          </div>
+
+          {/* Disposition */}
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-5">
+            <p className="text-sm font-semibold text-gray-700 mb-3">Call Outcome</p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {DISPOSITIONS.map((d) => (
+                <button
+                  key={d.status}
+                  onClick={() => handleUpdateStatus(d.status)}
+                  disabled={updating}
+                  className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border border-gray-200 ring-1 ring-transparent hover:ring-1 ${d.ring} ${d.bg} transition-all disabled:opacity-50 disabled:cursor-not-allowed text-left`}
+                >
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${d.dot}`} />
+                  <span className={`text-sm font-medium ${d.text}`}>{d.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* ══════════════════════════ RIGHT COLUMN ════════════════════════ */}
+        <div className="xl:sticky xl:top-20">
+          <TwilioDialer
+            leadId={currentLead._id}
+            phoneNumber={currentLead.phone}
+            onCallStart={() => toast.success("Call connected")}
+            onCallEnd={() => toast("Call ended", { icon: "📞" })}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Sub-components ──────────────────────────────────────────────────────────
+
+function Stat({
+  icon,
+  label,
+  value,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number;
+}) {
+  return (
+    <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-4 py-2.5 shadow-sm">
+      {icon}
+      <div>
+        <p className="text-xs text-gray-500">{label}</p>
+        <p className="text-sm font-bold text-gray-900 leading-none">{value}</p>
+      </div>
+    </div>
+  );
+}
+
+function InfoField({
+  icon,
+  label,
+  value,
+  mono,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="flex items-start gap-2.5">
+      <div className="mt-0.5">{icon}</div>
+      <div className="min-w-0">
+        <p className="text-[11px] text-gray-400 uppercase tracking-wider">{label}</p>
+        <p className={`text-sm font-semibold text-gray-900 truncate ${mono ? "font-mono" : ""}`}>
+          {value}
+        </p>
+      </div>
     </div>
   );
 }

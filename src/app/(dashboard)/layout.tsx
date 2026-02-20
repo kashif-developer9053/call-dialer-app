@@ -17,6 +17,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useState } from "react";
+import { TwilioProvider } from "@/components/providers/TwilioProvider";
+import InboundCallPopup from "@/components/agent/InboundCallPopup";
 
 export default function DashboardLayout({
   children,
@@ -140,9 +142,18 @@ export default function DashboardLayout({
         </aside>
 
         {/* Main Content */}
-        <main className="flex-1 lg:ml-0">
-          <div className="py-6 px-4 sm:px-6 lg:px-8">{children}</div>
-        </main>
+        {isAgent ? (
+          <TwilioProvider>
+            <InboundCallPopup />
+            <main className="flex-1 lg:ml-0">
+              <div className="py-6 px-4 sm:px-6 lg:px-8">{children}</div>
+            </main>
+          </TwilioProvider>
+        ) : (
+          <main className="flex-1 lg:ml-0">
+            <div className="py-6 px-4 sm:px-6 lg:px-8">{children}</div>
+          </main>
+        )}
       </div>
 
       {/* Mobile Sidebar Overlay */}

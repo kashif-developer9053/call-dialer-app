@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import twilio from "twilio";
+import { getAppUrl } from "@/lib/getAppUrl";
 
 /**
  * One-time setup: points your Twilio phone number's Voice URL at this app.
@@ -16,11 +17,11 @@ export async function POST(_req: NextRequest) {
   const accountSid = process.env.TWILIO_ACCOUNT_SID!;
   const authToken = process.env.TWILIO_AUTH_TOKEN!;
   const twilioPhone = process.env.TWILIO_PHONE_NUMBER!;
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL!;
+  const appUrl = getAppUrl();
 
-  if (!appUrl || appUrl.includes("localhost")) {
+  if (appUrl.includes("localhost")) {
     return NextResponse.json(
-      { error: "NEXT_PUBLIC_APP_URL must be a public HTTPS URL, not localhost." },
+      { error: "No public URL detected. Set NEXT_PUBLIC_APP_URL to your deployed HTTPS URL in Vercel env vars." },
       { status: 400 }
     );
   }

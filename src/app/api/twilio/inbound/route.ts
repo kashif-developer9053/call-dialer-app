@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import twilio from "twilio";
 import { enqueue } from "@/lib/inboundCallQueue";
+import { getAppUrl } from "@/lib/getAppUrl";
 
 /**
  * Twilio calls this when someone dials your Twilio number.
@@ -15,7 +16,7 @@ import { enqueue } from "@/lib/inboundCallQueue";
  */
 export async function POST(req: NextRequest) {
   const authToken = process.env.TWILIO_AUTH_TOKEN!;
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL!;
+  const appUrl = getAppUrl();
 
   // ── Validate request is from Twilio ──────────────────────────────────────
   const twilioSignature = req.headers.get("x-twilio-signature") ?? "";
