@@ -29,6 +29,7 @@ export interface InboundCall {
 
 interface TwilioContextValue {
   callStatus: CallStatus;
+  callEndReason: string | null; // e.g. "No answer", "Busy", "Declined"
   pendingInbound: InboundCall | null;
   available: boolean;
   deviceReady: boolean;
@@ -44,6 +45,18 @@ interface TwilioContextValue {
   clearError: () => void;
   runSetup: () => Promise<string>;
 }
+
+// ─── Twilio call status → human label ──────────────────────────────────────
+
+const END_REASON: Record<string, string> = {
+  busy:      "Line busy",
+  "no-answer": "No answer",
+  canceled:  "Call cancelled",
+  failed:    "Call failed",
+  completed: "Call ended",
+};
+
+const TERMINAL_STATUSES = new Set(["busy", "no-answer", "canceled", "failed", "completed"]);
 
 // ─── Context ───────────────────────────────────────────────────────────────
 
@@ -64,6 +77,7 @@ export function TwilioProvider({ children }: { children: ReactNode }) {
     duration: 0,
     callSid: null,
   });
+  const [callEndReason, setCallEndReason] = useState<string | null>(null);
   const [available, setAvailableState] = useState(false);
   const [deviceReady, setDeviceReady] = useState(false);
   const [micPermission, setMicPermission] = useState<"granted" | "denied" | "unknown">("unknown");
@@ -71,11 +85,100 @@ export function TwilioProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [pendingInbound, setPendingInbound] = useState<InboundCall | null>(null);
 
-  const deviceRef = useRef<Device | null>(null);
-  const callRef = useRef<Call | null>(null);
-  const durationRef = useRef<NodeJS.Timeout | null>(null);
+  const deviceRef     = useRef<Device | null>(null);
+  const callRef       = useRef<Call | null>(null);
+  const durationRef   = useRef<NodeJS.Timeout | null>(null);
+  const endReasonTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // ── Outbound call tracking ─────────────────────────────────────────────────
+  // For outbound: agent's browser leg fires "accept" almost immediately (server
+  // dials it), but the customer phone is still ringing. We must NOT transition
+  // to "connected" until we confirm the customer actually answered via Twilio's
+  // call-status API. We poll that endpoint and react accordingly.
+
+  const customerPollRef  = useRef<NodeJS.Timeout | null>(null);
+  const customerSidRef   = useRef<string | null>(null);
+  // True while we are waiting for the customer to answer (outbound pending)
+  const outboundPendingRef = useRef(false);
 
   const clearError = useCallback(() => setError(null), []);
+
+  // ── Reset to idle ──────────────────────────────────────────────────────────
+
+  const resetToIdle = useCallback(() => {
+    if (durationRef.current)  clearInterval(durationRef.current);
+    if (customerPollRef.current) clearInterval(customerPollRef.current);
+    customerPollRef.current  = null;
+    customerSidRef.current   = null;
+    outboundPendingRef.current = false;
+    callRef.current = null;
+    setCallStatus({ state: "idle", direction: null, duration: 0, callSid: null });
+  }, []);
+
+  // ── Show end reason briefly ───────────────────────────────────────────────
+
+  const showEndReason = useCallback((reason: string) => {
+    if (endReasonTimerRef.current) clearTimeout(endReasonTimerRef.current);
+    setCallEndReason(reason);
+    endReasonTimerRef.current = setTimeout(() => setCallEndReason(null), 4000);
+  }, []);
+
+  // ── Stop customer status polling ──────────────────────────────────────────
+
+  const stopCustomerPoll = useCallback(() => {
+    if (customerPollRef.current) {
+      clearInterval(customerPollRef.current);
+      customerPollRef.current = null;
+    }
+    customerSidRef.current = null;
+    outboundPendingRef.current = false;
+  }, []);
+
+  // ── Start customer status polling ─────────────────────────────────────────
+
+  const startCustomerPoll = useCallback(
+    (callSid: string) => {
+      stopCustomerPoll();
+      customerSidRef.current   = callSid;
+      outboundPendingRef.current = true;
+
+      const poll = async () => {
+        const sid = customerSidRef.current;
+        if (!sid) return;
+
+        try {
+          const res = await fetch(`/api/twilio/call-status/${sid}`);
+          if (!res.ok) return;
+          const { status } = await res.json() as { status: string };
+
+          if (status === "in-progress") {
+            // Customer answered — now we're truly connected
+            stopCustomerPoll();
+            setCallStatus((prev) => ({ ...prev, state: "connected" }));
+            durationRef.current = setInterval(() => {
+              setCallStatus((prev) => ({ ...prev, duration: prev.duration + 1 }));
+            }, 1000);
+
+          } else if (TERMINAL_STATUSES.has(status) && status !== "in-progress") {
+            // Customer declined / no-answer / busy / failed
+            stopCustomerPoll();
+            showEndReason(END_REASON[status] ?? "Call ended");
+            // Hang up agent's conference leg too
+            callRef.current?.disconnect();
+            resetToIdle();
+          }
+          // For "ringing" / "queued" / "initiated" → keep polling
+        } catch {
+          // ignore transient network errors
+        }
+      };
+
+      // Poll immediately, then every 2 s
+      poll();
+      customerPollRef.current = setInterval(poll, 2000);
+    },
+    [stopCustomerPoll, showEndReason, resetToIdle]
+  );
 
   // ── Availability ──────────────────────────────────────────────────────────
 
@@ -86,18 +189,24 @@ export function TwilioProvider({ children }: { children: ReactNode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ available: online }),
       });
-      setAvailableState(online);
-    } catch {
-      // network error — still update local state
-      setAvailableState(online);
-    }
+    } catch { /* ignore */ }
+    setAvailableState(online);
   }, []);
 
   // ── Call event listeners ──────────────────────────────────────────────────
+  // Key fix: for OUTBOUND calls, the agent's browser leg fires "accept" the
+  // moment the server dials it — before the customer answers. So we must NOT
+  // start the timer then. We stay in "ringing" and wait for the customer poll.
+  // For INBOUND, the customer is already in the conference, so "accept" = connected.
 
   const attachCallListeners = useCallback(
     (call: Call, direction: "inbound" | "outbound") => {
       call.on("accept", () => {
+        if (outboundPendingRef.current) {
+          // Outbound: agent leg joined conference, customer still ringing — wait
+          return;
+        }
+        // Inbound: customer is already in the conference → we're live
         setCallStatus((prev) => ({ ...prev, state: "connected", direction }));
         durationRef.current = setInterval(() => {
           setCallStatus((prev) => ({ ...prev, duration: prev.duration + 1 }));
@@ -105,20 +214,22 @@ export function TwilioProvider({ children }: { children: ReactNode }) {
       });
 
       call.on("disconnect", () => {
-        if (durationRef.current) clearInterval(durationRef.current);
-        callRef.current = null;
-        setCallStatus({ state: "idle", direction: null, duration: 0, callSid: null });
+        stopCustomerPoll();
+        resetToIdle();
       });
 
       call.on("cancel", () => {
-        if (durationRef.current) clearInterval(durationRef.current);
-        callRef.current = null;
-        setCallStatus({ state: "idle", direction: null, duration: 0, callSid: null });
+        stopCustomerPoll();
+        resetToIdle();
       });
 
-      call.on("error", (err: Error) => setError(`Call error: ${err.message}`));
+      call.on("error", (err: Error) => {
+        stopCustomerPoll();
+        setError(`Call error: ${err.message}`);
+        resetToIdle();
+      });
     },
-    []
+    [stopCustomerPoll, resetToIdle]
   );
 
   // ── Device initialization ─────────────────────────────────────────────────
@@ -162,7 +273,8 @@ export function TwilioProvider({ children }: { children: ReactNode }) {
         setError(`Device error: ${err.message}`);
       });
 
-      // Server dials agent's browser into the claimed conference
+      // Server dials agent's browser into the conference
+      // direction: "inbound" → customer is waiting in conference already
       device.on("incoming", (call: Call) => {
         callRef.current = call;
         attachCallListeners(call, "inbound");
@@ -185,30 +297,28 @@ export function TwilioProvider({ children }: { children: ReactNode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ available: false }),
       }).catch(() => {});
+      stopCustomerPoll();
       if (durationRef.current) clearInterval(durationRef.current);
+      if (endReasonTimerRef.current) clearTimeout(endReasonTimerRef.current);
       deviceRef.current?.destroy();
     };
-  }, [attachCallListeners, setAvailability]);
+  }, [attachCallListeners, setAvailability, stopCustomerPoll]);
 
-  // ── Inbound polling ───────────────────────────────────────────────────────
+  // ── Inbound queue polling ─────────────────────────────────────────────────
 
   useEffect(() => {
     if (!available || callStatus.state !== "idle") {
       setPendingInbound(null);
       return;
     }
-
     const poll = async () => {
       try {
         const res = await fetch("/api/twilio/inbound-poll");
         if (!res.ok) return;
         const { waitingCalls } = await res.json();
         setPendingInbound(waitingCalls.length > 0 ? waitingCalls[0] : null);
-      } catch {
-        // silently ignore transient poll errors
-      }
+      } catch { /* ignore */ }
     };
-
     poll();
     const id = setInterval(poll, 3000);
     return () => clearInterval(id);
@@ -218,10 +328,7 @@ export function TwilioProvider({ children }: { children: ReactNode }) {
 
   const initiateCall = useCallback(
     async (to: string, leadId?: string) => {
-      if (!deviceReady) {
-        setError("Device not ready. Please wait.");
-        return;
-      }
+      if (!deviceReady) { setError("Device not ready. Please wait."); return; }
       if (callStatus.state !== "idle") return;
 
       setError(null);
@@ -239,20 +346,29 @@ export function TwilioProvider({ children }: { children: ReactNode }) {
           setCallStatus({ state: "idle", direction: null, duration: 0, callSid: null });
           return;
         }
-        setCallStatus((prev) => ({ ...prev, state: "ringing", callSid: data.customerCallSid }));
+
+        // State = ringing (customer phone is now ringing)
+        setCallStatus((prev) => ({
+          ...prev,
+          state: "ringing",
+          callSid: data.customerCallSid,
+        }));
+
+        // Poll customer call status so we know when they answer / decline
+        startCustomerPoll(data.customerCallSid);
+
       } catch (err) {
         setError(`Failed to start call: ${(err as Error).message}`);
         setCallStatus({ state: "idle", direction: null, duration: 0, callSid: null });
       }
     },
-    [deviceReady, callStatus.state]
+    [deviceReady, callStatus.state, startCustomerPoll]
   );
 
   const acceptInbound = useCallback(async () => {
     if (!pendingInbound) return;
     const call = pendingInbound;
     setPendingInbound(null);
-
     try {
       const res = await fetch("/api/twilio/claim-inbound", {
         method: "POST",
@@ -261,7 +377,6 @@ export function TwilioProvider({ children }: { children: ReactNode }) {
       });
       const data = await res.json();
       if (!res.ok) setError(data.error ?? "Failed to claim call");
-      // device.on("incoming") fires once Twilio dials the agent's browser into the conference
     } catch (err) {
       setError(`Failed to accept: ${(err as Error).message}`);
     }
@@ -269,7 +384,10 @@ export function TwilioProvider({ children }: { children: ReactNode }) {
 
   const dismissInbound = useCallback(() => setPendingInbound(null), []);
 
-  const endCall = useCallback(() => callRef.current?.disconnect(), []);
+  const endCall = useCallback(() => {
+    stopCustomerPoll();
+    callRef.current?.disconnect();
+  }, [stopCustomerPoll]);
 
   const toggleMic = useCallback(() => {
     if (!callRef.current) return;
@@ -292,6 +410,7 @@ export function TwilioProvider({ children }: { children: ReactNode }) {
     <TwilioContext.Provider
       value={{
         callStatus,
+        callEndReason,
         pendingInbound,
         available,
         deviceReady,

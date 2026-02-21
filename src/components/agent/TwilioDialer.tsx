@@ -1,7 +1,10 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Phone, PhoneOff, Mic, MicOff, Delete, Settings, Radio, AlertCircle } from "lucide-react";
+import {
+  Phone, PhoneOff, PhoneCall, PhoneMissed,
+  Mic, MicOff, Delete, Settings, Radio, AlertCircle, X,
+} from "lucide-react";
 import { useTwilio } from "@/components/providers/TwilioProvider";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -13,7 +16,7 @@ interface TwilioDialerProps {
   onCallEnd?: () => void;
 }
 
-// ─── Keypad layout ─────────────────────────────────────────────────────────
+// ─── Keypad ─────────────────────────────────────────────────────────────────
 
 const ROWS = [
   ["1", "2", "3"],
@@ -22,7 +25,6 @@ const ROWS = [
   ["*", "0", "#"],
 ] as const;
 
-// Sub-labels shown below each key
 const SUB: Record<string, string> = {
   "1": "",    "2": "ABC",  "3": "DEF",
   "4": "GHI", "5": "JKL",  "6": "MNO",
@@ -44,6 +46,7 @@ export default function TwilioDialer({
 }: TwilioDialerProps) {
   const {
     callStatus,
+    callEndReason,
     available,
     deviceReady,
     micPermission,
@@ -61,14 +64,22 @@ export default function TwilioDialer({
   const [manualNumber, setManualNumber] = useState("");
   const [dialing, setDialing] = useState(false);
   const [setupMsg, setSetupMsg] = useState<string | null>(null);
+  // Track the number currently being dialed (shown during ringing state)
+  const [dialingTo, setDialingTo] = useState<string | null>(null);
+
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Fire onCallStart / onCallEnd callbacks on state transitions
+  // Clear dialingTo once call settles back to idle
+  useEffect(() => {
+    if (callStatus.state === "idle") setDialingTo(null);
+  }, [callStatus.state]);
+
+  // Fire onCallStart / onCallEnd on state transitions
   const prevStateRef = useRef(callStatus.state);
   const onCallStartRef = useRef(onCallStart);
-  const onCallEndRef = useRef(onCallEnd);
+  const onCallEndRef   = useRef(onCallEnd);
   useEffect(() => { onCallStartRef.current = onCallStart; }, [onCallStart]);
-  useEffect(() => { onCallEndRef.current = onCallEnd; }, [onCallEnd]);
+  useEffect(() => { onCallEndRef.current   = onCallEnd;   }, [onCallEnd]);
   useEffect(() => {
     const prev = prevStateRef.current;
     const curr = callStatus.state;
@@ -78,11 +89,12 @@ export default function TwilioDialer({
   }, [callStatus.state]);
 
   const isInCall = callStatus.state === "ringing" || callStatus.state === "connected";
-  const canDial = deviceReady && micPermission === "granted" && callStatus.state === "idle" && !dialing;
+  const canDial  = deviceReady && micPermission === "granted" && callStatus.state === "idle" && !dialing;
 
   const handleDial = async () => {
     const number = mode === "auto" ? phoneNumber : manualNumber;
     if (!number?.trim()) return;
+    setDialingTo(number.trim());
     setDialing(true);
     try {
       await initiateCall(number.trim(), leadId);
@@ -91,15 +103,14 @@ export default function TwilioDialer({
     }
   };
 
-  // Append a character to the manual number and keep input focused
   const pressKey = (key: string) => {
     if (isInCall) return;
-    setManualNumber((prev) => prev + key);
+    setManualNumber((p) => p + key);
     inputRef.current?.focus();
   };
 
   const handleBackspace = () => {
-    setManualNumber((prev) => prev.slice(0, -1));
+    setManualNumber((p) => p.slice(0, -1));
     inputRef.current?.focus();
   };
 
@@ -109,6 +120,8 @@ export default function TwilioDialer({
     setSetupMsg(msg);
     setTimeout(() => setSetupMsg(null), 7000);
   };
+
+  // ─── Render ──────────────────────────────────────────────────────────────
 
   return (
     <div className="bg-gray-950 text-white rounded-2xl overflow-hidden shadow-2xl border border-gray-800 w-full max-w-sm mx-auto select-none">
@@ -162,6 +175,14 @@ export default function TwilioDialer({
         </div>
       )}
 
+      {/* ── Call-end reason flash (no answer / busy / etc.) ── */}
+      {callEndReason && callStatus.state === "idle" && (
+        <div className="px-4 py-2.5 bg-amber-950/50 border-b border-amber-900/40 flex items-center gap-2">
+          <PhoneMissed className="w-4 h-4 text-amber-400 shrink-0" />
+          <p className="text-xs text-amber-300 flex-1 font-medium">{callEndReason}</p>
+        </div>
+      )}
+
       {/* ── Connecting spinner ── */}
       {!deviceReady && micPermission !== "denied" && !error && (
         <div className="px-5 py-2.5 flex items-center justify-center gap-2 border-b border-gray-800">
@@ -170,52 +191,82 @@ export default function TwilioDialer({
         </div>
       )}
 
-      {/* ══════════════════════ IN-CALL OVERLAY ══════════════════════════ */}
-      {isInCall ? (
+      {/* ══════════════════════ RINGING (outbound) ═══════════════════════ */}
+      {callStatus.state === "ringing" && callStatus.direction === "outbound" && (
         <div className="px-5 py-8 flex flex-col items-center gap-5">
 
-          {callStatus.state === "ringing" ? (
-            <div className="relative flex items-center justify-center">
-              <span className="absolute w-24 h-24 rounded-full bg-blue-500/10 animate-ping" />
-              <div className="relative w-16 h-16 rounded-full bg-blue-600/20 ring-4 ring-blue-500/40 flex items-center justify-center">
-                <Phone className="w-7 h-7 text-blue-400" />
-              </div>
+          {/* Animated ringing icon */}
+          <div className="relative flex items-center justify-center">
+            <span className="absolute w-28 h-28 rounded-full bg-blue-500/10 animate-ping" />
+            <span className="absolute w-20 h-20 rounded-full bg-blue-500/15 animate-pulse" />
+            <div className="relative w-16 h-16 rounded-full bg-blue-600/25 ring-4 ring-blue-500/50 flex items-center justify-center">
+              <PhoneCall className="w-7 h-7 text-blue-400" />
             </div>
-          ) : (
-            <div className="relative flex items-center justify-center">
-              <span className="absolute w-24 h-24 rounded-full bg-green-500/10 animate-pulse" />
-              <div className="relative w-16 h-16 rounded-full bg-green-600/20 ring-4 ring-green-500/40 flex items-center justify-center">
-                <Phone className="w-7 h-7 text-green-400" />
-              </div>
-            </div>
-          )}
+          </div>
 
-          {callStatus.state === "ringing" ? (
-            <p className="text-gray-400 text-sm">
-              {callStatus.direction === "inbound" ? "Connecting…" : "Ringing…"}
+          <div className="text-center">
+            <p className="text-xs uppercase tracking-widest text-blue-400/70 mb-1">Ringing…</p>
+            <p className="text-xl font-mono font-semibold text-white">
+              {dialingTo ?? "—"}
             </p>
-          ) : (
-            <div className="text-center">
-              <p className="text-xs uppercase tracking-widest text-green-500/70 mb-0.5">
-                {callStatus.direction === "inbound" ? "Inbound" : "Outbound"} — Live
-              </p>
-              <p className="text-4xl font-mono font-bold text-white tracking-wider">
-                {fmt(callStatus.duration)}
-              </p>
+            <p className="text-xs text-gray-600 mt-1">Waiting for the other party</p>
+          </div>
+
+          {/* Cancel button */}
+          <button
+            onClick={endCall}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-red-600/90 hover:bg-red-600 text-white text-sm font-semibold transition-all"
+          >
+            <X className="w-4 h-4" />
+            Cancel Call
+          </button>
+        </div>
+      )}
+
+      {/* ══════════════════════ RINGING (inbound) ════════════════════════ */}
+      {callStatus.state === "ringing" && callStatus.direction === "inbound" && (
+        <div className="px-5 py-8 flex flex-col items-center gap-5">
+          <div className="relative flex items-center justify-center">
+            <span className="absolute w-24 h-24 rounded-full bg-purple-500/10 animate-ping" />
+            <div className="relative w-16 h-16 rounded-full bg-purple-600/20 ring-4 ring-purple-500/40 flex items-center justify-center">
+              <Phone className="w-7 h-7 text-purple-400" />
             </div>
-          )}
+          </div>
+          <p className="text-gray-400 text-sm">Connecting to inbound call…</p>
+        </div>
+      )}
+
+      {/* ══════════════════════ CONNECTED ════════════════════════════════ */}
+      {callStatus.state === "connected" && (
+        <div className="px-5 py-8 flex flex-col items-center gap-5">
+          <div className="relative flex items-center justify-center">
+            <span className="absolute w-24 h-24 rounded-full bg-green-500/10 animate-pulse" />
+            <div className="relative w-16 h-16 rounded-full bg-green-600/20 ring-4 ring-green-500/40 flex items-center justify-center">
+              <Phone className="w-7 h-7 text-green-400" />
+            </div>
+          </div>
+
+          <div className="text-center">
+            <p className="text-xs uppercase tracking-widest text-green-500/70 mb-1">
+              {callStatus.direction === "inbound" ? "Inbound" : "Outbound"} — Live
+            </p>
+            <p className="text-4xl font-mono font-bold text-white tracking-wider">
+              {fmt(callStatus.duration)}
+            </p>
+            {dialingTo && callStatus.direction === "outbound" && (
+              <p className="text-xs text-gray-600 mt-1 font-mono">{dialingTo}</p>
+            )}
+          </div>
 
           <div className="flex items-center gap-5">
-            {callStatus.state === "connected" && (
-              <button
-                onClick={toggleMic}
-                className={`w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-md ${
-                  micEnabled ? "bg-gray-700 hover:bg-gray-600" : "bg-red-600 hover:bg-red-500 ring-2 ring-red-500/40"
-                }`}
-              >
-                {micEnabled ? <Mic className="w-6 h-6 text-white" /> : <MicOff className="w-6 h-6 text-white" />}
-              </button>
-            )}
+            <button
+              onClick={toggleMic}
+              className={`w-14 h-14 rounded-full flex items-center justify-center transition-all shadow-md ${
+                micEnabled ? "bg-gray-700 hover:bg-gray-600" : "bg-red-600 hover:bg-red-500 ring-2 ring-red-500/40"
+              }`}
+            >
+              {micEnabled ? <Mic className="w-6 h-6 text-white" /> : <MicOff className="w-6 h-6 text-white" />}
+            </button>
             <button
               onClick={endCall}
               className="w-14 h-14 rounded-full bg-red-600 hover:bg-red-500 flex items-center justify-center transition-all shadow-md shadow-red-900/50"
@@ -224,10 +275,20 @@ export default function TwilioDialer({
             </button>
           </div>
         </div>
+      )}
 
-      ) : (
+      {/* ══════════════════════ DIALING SPINNER ══════════════════════════ */}
+      {callStatus.state === "dialing" && (
+        <div className="px-5 py-8 flex flex-col items-center gap-3">
+          <span className="w-10 h-10 border-2 border-gray-700 border-t-blue-400 rounded-full animate-spin" />
+          <p className="text-sm text-gray-400">Starting call…</p>
+        </div>
+      )}
+
+      {/* ══════════════════════ IDLE: MODE + KEYPAD ══════════════════════ */}
+      {callStatus.state === "idle" && (
         <>
-          {/* ══════════════════════ MODE TOGGLE ══════════════════════════ */}
+          {/* Mode toggle */}
           <div className="px-5 pt-4">
             <div className="flex bg-gray-900 rounded-xl p-1 gap-1">
               {(["auto", "manual"] as const).map((m) => (
@@ -244,7 +305,7 @@ export default function TwilioDialer({
             </div>
           </div>
 
-          {/* ══════════════════════ AUTO LEAD MODE ═══════════════════════ */}
+          {/* ── Auto Lead ── */}
           {mode === "auto" && (
             <div className="px-5 py-4">
               {phoneNumber ? (
@@ -265,11 +326,10 @@ export default function TwilioDialer({
             </div>
           )}
 
-          {/* ══════════════════════ MANUAL MODE ══════════════════════════ */}
+          {/* ── Manual ── */}
           {mode === "manual" && (
             <div className="px-5 py-4 space-y-3">
-
-              {/* Number input — editable + populated by keypad */}
+              {/* Editable number display */}
               <div className="flex items-center gap-1 bg-gray-900 rounded-xl pl-4 pr-2 min-h-[54px]">
                 <input
                   ref={inputRef}
@@ -289,24 +349,21 @@ export default function TwilioDialer({
                 )}
               </div>
 
-              {/* Standard keypad: 1-9, *, 0, # */}
+              {/* Keypad */}
               <div className="grid grid-cols-3 gap-2">
                 {ROWS.flat().map((key) => (
                   <KeyButton key={key} digit={key} sub={SUB[key]} onClick={() => pressKey(key)} />
                 ))}
               </div>
 
-              {/* Bottom action row: + button · Dial button · clear */}
+              {/* Bottom row: + | Dial | CLR */}
               <div className="flex items-center gap-2">
-                {/* + button */}
                 <button
                   onClick={() => pressKey("+")}
-                  className="w-12 h-12 rounded-xl bg-gray-800 hover:bg-gray-700 active:bg-gray-600 flex flex-col items-center justify-center transition-all shrink-0"
+                  className="w-12 h-12 rounded-xl bg-gray-800 hover:bg-gray-700 active:bg-gray-600 flex items-center justify-center transition-all shrink-0"
                 >
-                  <span className="text-xl font-semibold text-white leading-none">+</span>
+                  <span className="text-xl font-semibold text-white">+</span>
                 </button>
-
-                {/* Dial */}
                 <DialButton
                   loading={dialing}
                   disabled={!canDial || !manualNumber.trim()}
@@ -314,8 +371,6 @@ export default function TwilioDialer({
                   label="Dial"
                   className="flex-1"
                 />
-
-                {/* Clear all */}
                 <button
                   onClick={() => setManualNumber("")}
                   disabled={!manualNumber}
@@ -325,7 +380,6 @@ export default function TwilioDialer({
                   <span className="text-gray-400 text-xs font-medium">CLR</span>
                 </button>
               </div>
-
             </div>
           )}
         </>
@@ -336,46 +390,28 @@ export default function TwilioDialer({
   );
 }
 
-// ─── Reusable key button ────────────────────────────────────────────────────
+// ─── Key button ─────────────────────────────────────────────────────────────
 
-function KeyButton({
-  digit,
-  sub,
-  onClick,
-}: {
-  digit: string;
-  sub?: string;
-  onClick: () => void;
-}) {
+function KeyButton({ digit, sub, onClick }: { digit: string; sub?: string; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       className="bg-gray-800 hover:bg-gray-700 active:bg-gray-600 active:scale-95 rounded-xl py-3 flex flex-col items-center gap-0.5 transition-all"
     >
       <span className="text-xl font-semibold text-white leading-none">{digit}</span>
-      {sub ? (
-        <span className="text-[9px] text-gray-500 tracking-widest">{sub}</span>
-      ) : (
-        <span className="text-[9px] text-transparent">·</span>
-      )}
+      {sub
+        ? <span className="text-[9px] text-gray-500 tracking-widest">{sub}</span>
+        : <span className="text-[9px] text-transparent">·</span>}
     </button>
   );
 }
 
-// ─── Dial button ────────────────────────────────────────────────────────────
+// ─── Dial button ─────────────────────────────────────────────────────────────
 
 function DialButton({
-  loading,
-  disabled,
-  onClick,
-  label,
-  className = "w-full",
+  loading, disabled, onClick, label, className = "w-full",
 }: {
-  loading: boolean;
-  disabled: boolean;
-  onClick: () => void;
-  label: string;
-  className?: string;
+  loading: boolean; disabled: boolean; onClick: () => void; label: string; className?: string;
 }) {
   return (
     <button
@@ -384,15 +420,9 @@ function DialButton({
       className={`py-3.5 rounded-xl bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed font-semibold text-base flex items-center justify-center gap-2 transition-all shadow-lg shadow-green-950/50 active:scale-[0.98] ${className}`}
     >
       {loading ? (
-        <>
-          <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-          Connecting…
-        </>
+        <><span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />Connecting…</>
       ) : (
-        <>
-          <Phone className="w-5 h-5" />
-          {label}
-        </>
+        <><Phone className="w-5 h-5" />{label}</>
       )}
     </button>
   );
