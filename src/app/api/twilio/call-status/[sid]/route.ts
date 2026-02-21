@@ -10,12 +10,12 @@ import twilio from "twilio";
  */
 export async function GET(
   _req: NextRequest,
-  { params }: { params: { sid: string } }
+  { params }: { params: Promise<{ sid: string }> }
 ) {
   const session = await getServerSession(authOptions);
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const { sid } = params;
+  const { sid } = await params;
   if (!sid) return NextResponse.json({ error: "Missing call SID" }, { status: 400 });
 
   const client = twilio(
